@@ -10,7 +10,7 @@ import org.tessellation.kryo.KryoSerializer
 import org.tessellation.rosetta.server.model._
 import org.tessellation.rosetta.server.model.dag.schema.{ChainObjectStatus, ConstructionMetadataResponseMetadata, ErrorDetailKeyValue, ErrorDetails}
 import org.tessellation.schema.address.{Address, DAGAddress, DAGAddressRefined}
-import org.tessellation.schema.transaction.{TransactionAmount, TransactionFee, TransactionReference, Transaction => DAGTransaction}
+import org.tessellation.schema.transaction.{TransactionAmount, TransactionFee, TransactionOrdinal, TransactionReference, TransactionSalt, Transaction => DAGTransaction}
 import org.tessellation.sdk.config.types.HttpServerConfig
 import org.tessellation.sdk.resources.MkHttpServer
 import org.tessellation.sdk.resources.MkHttpServer.ServerName
@@ -41,8 +41,60 @@ case class LastTransactionResponse(
                                     suggestedFee: Option[Long]
                                   )
 
+
+case class SnapshotInfo(
+                         hash: String,
+                         height: Long,
+                         timestamp: Long
+                       )
 // Mockup of real client
 class DagL1APIClient(val endpoint: String) {
+
+  def queryCurrentSnapshotHashAndHeight(): Either[String, SnapshotInfo] = {
+    Right(SnapshotInfo(examples.sampleHash, 0, 0))
+  }
+
+  def queryGenesisSnapshotHash(): Either[String, String] = {
+    Right(examples.sampleHash)
+  }
+
+  def queryPeerIds(): Either[String, List[String]] = {
+    Right(List(examples.sampleHash))
+  }
+
+  def queryNetworkStatus(): Either[String, NetworkStatusResponse] = {
+    queryPeerIds() match {
+      case Left(x) => Left(x)
+      case Right(peerIds) =>
+        queryGenesisSnapshotHash() match {
+          case Left(x) => Left(x)
+          case Right(genesisHash) =>
+            queryCurrentSnapshotHashAndHeight() match {
+              case Left(x) => Left(x)
+              case Right (SnapshotInfo(snapshotHash, snapshotHeight, timestamp)) =>
+                Right(NetworkStatusResponse(
+                  BlockIdentifier(snapshotHeight, snapshotHash),
+                  timestamp,
+                  BlockIdentifier(0, genesisHash),
+                  None,
+                  // TODO: check if node status is downloading, if so provide info.
+                  None,
+                  peerIds.map { id => Peer(id, None) }
+                ))
+            }
+        }
+    }
+  }
+
+  def queryVersion(): Either[String, String] = {
+    Right("2.0.0")
+  }
+
+
+  def submitTransaction(stx: Signed[DAGTransaction]): Either[String, Unit] = {
+    Either.cond(test = true, println("Submitting transaction " + stx), "")
+  }
+
 
   def requestSuggestedFee(): Either[String, Option[Long]] = {
     Right(Some(123))
@@ -72,8 +124,40 @@ case class AccountBlockResponse(
                                  height: Long
                                )
 
+case class BlockSearchRequest(
+                               isOr: Boolean,
+                               isAnd: Boolean,
+                               addressOpt: Option[String],
+                               networkStatus: Option[String],
+                               limit: Option[Long],
+                               offset: Option[Long],
+                               transactionHash: Option[String],
+                               maxBlock: Option[Long],
+                             )
+
+case class TransactionWithBlockHash(
+  transaction: Signed[DAGTransaction],
+  blockHash: String,
+  blockIndex: Long
+                              )
+
+case class BlockSearchResponse(
+  transactions: List[TransactionWithBlockHash],
+  total: Long,
+  nextOffset: Option[Long]
+                              )
+
 // Mockup of real client
 class BlockIndexClient(val endpoint: String) {
+
+  def searchBlocks(blockSearchRequest: BlockSearchRequest): Either[String,BlockSearchResponse] = {
+    Right(BlockSearchResponse(List(TransactionWithBlockHash(examples.transaction, examples.sampleHash, 0)),
+      1, None))
+  }
+
+  def queryBlockEvents(limit: Option[Long], offset: Option[Long]): Either[String, List[GlobalSnapshot]] = {
+    Either.cond(offset.contains(0), List(examples.snapshot), "err from block service")
+  }
 
 
   // This also has to request from L1 in case the indexer doesn't have it
@@ -122,6 +206,28 @@ import org.tessellation.rosetta.server.model.dag.decoders._
 import java.security.{PublicKey => JPublicKey}
 
 object Rosetta {
+
+
+  def reduceListEither[L, R](eitherList: List[Either[L, List[R]]]): Either[L, List[R]] = {
+    eitherList.reduce{ case (l, r) =>
+      l match {
+        case x @ Left(_) => x
+        case Right(y) => r match {
+          case xx @ Left(_) => xx
+          case Right(yy) => Right(y ++ yy)
+        }
+      }
+    }
+  }
+  // block_added or block_removed
+  def convertSnapshotsToBlockEvents[F[_]: KryoSerializer:
+  SecurityProvider: Async](gs: List[GlobalSnapshot], blockEventType: String): Either[String, List[BlockEvent]] = {
+    val value = gs.map(s => s.hash.map(h => List(h -> s)))
+    val hashed = reduceListEither(value).left.map(_.getMessage)
+    hashed.map{ ls => ls.map { case (hash, s) =>
+      BlockEvent(s.height.value, BlockIdentifier(s.height.value, hash.value), blockEventType)
+    }}
+  }
 
 
   import cats.effect._
@@ -184,6 +290,7 @@ object Rosetta {
 
 
   val errorCodes = Map(
+    // TODO: Need a 'retriable' field here for network options.
     0 -> ("Unknown internal error", ""),
     1 -> ("Unsupported network", "Unable to route request to specified network or network not yet supported"),
     2 -> ("Unknown hash", "Unable to find reference to hash"),
@@ -252,7 +359,7 @@ object Rosetta {
                                   parentHash: String,
                                   parentOrdinal: Long,
                                   salt: Option[Long]
-                                ) = {
+                                ): DAGTransaction = {
     // TODO: Same question here as below, one or two operations?
     val operationPositive = operations.head
     val amount = operationPositive.amount.get.value.toLong
@@ -262,18 +369,17 @@ object Rosetta {
     // TODO: Validate at higher level
     //import DAGAddressRefined._
     //val srcA = addressCorrectValidate.validate(src).fold(identity, _ => Address(examples.transaction.)
-
     DAGTransaction(
       srcA,
       Address(destination),
       TransactionAmount(PosLong(amount)),
       TransactionFee(NonNegLong(fee)),
-      TransactionReference(Hash(""), TransactionOrdinal())
-
-
+      TransactionReference(Hash(parentHash), TransactionOrdinal(parentOrdinal)),
+      TransactionSalt(salt.getOrElse(0L))
     )
   }
 
+  // TODO: Translate function for reward transactions
   def translateDAGTransactionToOperations(tx: DAGTransaction, status: String): List[Operation] = {
     // TODO: Huge question, do we need to represent another operation for the
     // negative side of this transaction?
@@ -715,30 +821,61 @@ final case class RosettaRoutes[F[_]: Async: KryoSerializer: SecurityProvider]() 
       }
     }
 
-//
-//        case req @ POST -> Root / "construction" / "preprocess" => {
-//          req.decodeRosetta[ConstructionPreprocessRequest] { br =>
-//            validateNetwork[ConstructionPreprocessRequest](br, _.networkIdentifier, { (x) =>
-//              ConstructionPreprocessResponse()
-//            }
-//          }
-//        }
+    case req @ POST -> Root / "construction" / "preprocess" => {
+      req.decodeRosetta[ConstructionPreprocessRequest] { br =>
+        validateNetwork[ConstructionPreprocessRequest](br, _.networkIdentifier, { (x) =>
+          // TODO: Multisig for multi-accounts here potentially.
+          val requiredPublicKeys = br.operations.head.account.map(List(_))
+          // TODO: Right now the /metadata endpoint is actually grabbing the options directly
+          // that logic should be moved here, but it doesn't matter much initially.
+          val options = None
+          Ok(ConstructionPreprocessResponse(options, requiredPublicKeys))
+        })
+      }
+    }
 
-    //    case req @ POST -> Root / "construction" / "submit" => {
-    //      req.decodeRosetta[ConstructionMetadataRequest] { br =>
-    //        validateNetwork[ConstructionMetadataRequest](br, _.networkIdentifier, { (x) =>
-    //          ConstructionMetadataResponse()
-    //        }
-    //      }
-    //    }
+    case req @ POST -> Root / "construction" / "submit" => {
+      req.decodeRosetta[ConstructionSubmitRequest] { br =>
+        validateNetwork[ConstructionSubmitRequest](br, _.networkIdentifier, { (x) =>
+          validateHex(br.signedTransaction).map { hex =>
+            // TODO: Common func for kryo deser.
+            KryoSerializer[F].deserialize[Signed[DAGTransaction]](hex.toBytes)
+              .left.map(t => errorMsg(14, t.getMessage))
+              .map { stx =>
+                stx.hash
+                  .left.map(e => errorMsg(0, "Hash calculation failure: " + e.getMessage))
+                  .map { hash =>
+                    new DagL1APIClient(x).submitTransaction(stx)
+                      // TODO block service error meessage
+                      .left.map(e => errorMsg(0, e))
+                      .map { _ =>
+                        Ok(TransactionIdentifierResponse(TransactionIdentifier(hash.value), None))
+                      }.merge
+                  }.merge
+              }.merge
+          }.merge
+        })
+      }
+    }
 
-    //    case req @ POST -> Root / "events" / "blocks" => {
-    //      req.decodeRosetta[ConstructionMetadataRequest] { br =>
-    //        validateNetwork[ConstructionMetadataRequest](br, _.networkIdentifier, { (x) =>
-    //          ConstructionMetadataResponse()
-    //        }
-    //      }
-    //    }
+    case req @ POST -> Root / "events" / "blocks" => {
+      req.decodeRosetta[EventsBlocksRequest] { br =>
+        validateNetwork[EventsBlocksRequest](br, _.networkIdentifier, { (x) =>
+          new BlockIndexClient(x).queryBlockEvents(br.limit, br.offset)
+            // TODO: error code and abstract
+            .left.map(e => errorMsg(0, "blockevents query failure: " + e))
+            .map { gs =>
+              // TODO: handle block_removed
+              Rosetta.convertSnapshotsToBlockEvents(gs, "block_added")
+                .left.map(e => errorMsg(0, e))
+                .map{ lsbe =>
+                  val maxSeq = lsbe.map(_.sequence).max
+                  Ok(EventsBlocksResponse(maxSeq, lsbe))
+                }.merge
+            }.merge
+        })
+      }
+    }
 
     case req @ POST -> Root / "mempool" => {
       req.decodeRosetta[NetworkRequest] { NR =>
@@ -780,51 +917,85 @@ final case class RosettaRoutes[F[_]: Async: KryoSerializer: SecurityProvider]() 
         )
       }
     }
-    //    case req @ POST -> Root / "network" / "options" => {
-    //      req.decodeRosetta[ConstructionMetadataRequest] { br =>
-    //        validateNetwork[ConstructionMetadataRequest](br, _.networkIdentifier, { (x) =>
-    //          ConstructionMetadataResponse()
-    //        }
-    //      }
-    //    }
-    //    case req @ POST -> Root / "network" / "status" => {
-    //      req.decodeRosetta[ConstructionMetadataRequest] { br =>
-    //        validateNetwork[ConstructionMetadataRequest](br, _.networkIdentifier, { (x) =>
-    //          ConstructionMetadataResponse()
-    //        }
-    //      }
-    //    }
-    //
-    //        case req @ POST -> Root / "search" / "transactions" => {
-    //          req.decodeRosetta[SearchTransactionsRequest] { br =>
-    //            validateNetwork[SearchTransactionsRequest](br, _.networkIdentifier, { (x) =>
-    //              val client = new BlockIndexClient(x)
-    //              // TODO: Enum
-    //              val isOr = br.operator.contains("or")
-    //              val isAnd = br.operator.contains("and")
-    //              // TODO: Throw error on subaccountidentifier not supported.
-    //              val account2 = br.accountIdentifier.map(_.address)
-    //              val accountOpt = Seq(br.address, account2).filter(_.nonEmpty).head
-    //              // TODO: Throw error on `type` not supported, coin, currency not supported
-    //              br.transactionIdentifier
-    //              val networkStatus = br.status
-    //              br.success
-    //              case class BlockSearchRequest(
-    //                                             isOr: Boolean,
-    //                                             isAnd: Boolean,
-    //                                             addressOpt: Option[String],
-    //                                             networkStatus: NetworkChainObjectStatus,
-    //                                             limit: Option[Long],
-    //                                             offset: Option[Long],
-    //                                             transactionHash: Option[String],
-    //                                             maxBlock: Option[String],
-    //                                           )
-    //
-    //              ConstructionMetadataResponse()
-    //            }
-    //          }
-    //        }
+    case req @ POST -> Root / "network" / "options" => {
+      req.decodeRosetta[NetworkRequest] { br =>
+        validateNetwork[NetworkRequest](br, _.networkIdentifier, { (x) =>
+          new DagL1APIClient(x).queryVersion()
+            // TODO: err
+            .left.map(e => errorMsg(0, "err"))
+            .map(v => Ok(NetworkOptionsResponse(Version("1.4.12", v, None, None), Allow(
+              List(
+                OperationStatus(ChainObjectStatus.Pending.toString, successful = false),
+                OperationStatus(ChainObjectStatus.Unknown.toString, successful = false),
+                OperationStatus(ChainObjectStatus.Accepted.toString, successful = false),
+              ),
+              List(dagCurrencyType),
+              errorCodes.map{case (code, (descr, extended)) =>
+                // TODO: fix retriable
+                Error(code, descr, Some(extended), retriable = true, None)
+              }.toList,
+              // TODO: set historical balance lookup if block indexer provides, can be optional.
+              false,
+              None,
+              List(),
+              // TODO: Verify no balance exemptions
+              List(),
+              false,
+              Some("lower_case"),
+              Some("lower_case")
+            )))).merge
+        })
+      }
+    }
 
+    case req @ POST -> Root / "network" / "status" => {
+      req.decodeRosetta[NetworkRequest] { br =>
+        validateNetwork[NetworkRequest](br, _.networkIdentifier, { (x) =>
+          new DagL1APIClient(x).queryNetworkStatus()
+            // TODO: err
+            .left.map(e => errorMsg(0, "err"))
+            .map(Ok(_))
+            .merge
+        })
+      }
+    }
+
+    case req @ POST -> Root / "search" / "transactions" => {
+      req.decodeRosetta[SearchTransactionsRequest] { br =>
+        validateNetwork[SearchTransactionsRequest](br, _.networkIdentifier, { (x) =>
+          val client = new BlockIndexClient(x)
+          // TODO: Enum
+          val isOr = br.operator.contains("or")
+          val isAnd = br.operator.contains("and")
+          // TODO: Throw error on subaccountidentifier not supported.
+          val account2 = br.accountIdentifier.map(_.address)
+          val accountOpt = Seq(br.address, account2).filter(_.nonEmpty).head
+          // TODO: Throw error on `type` not supported, coin, currency not supported
+          val networkStatus = br.status
+          client.searchBlocks(BlockSearchRequest(
+            isOr,
+            isAnd,
+            accountOpt,
+            networkStatus,
+            br.limit,
+            br.offset,
+            br.transactionIdentifier.map(_.hash),
+            br.maxBlock
+          )).left.map(e => errorMsg(0, e))
+            .map { res =>
+              val value = res.transactions.map { tx =>
+                translateTransaction(tx.transaction).left.map(InternalServerError(_))
+                  .map(txR =>
+                    List(BlockTransaction(BlockIdentifier(tx.blockIndex, tx.blockHash), txR))
+                  )
+              }
+              reduceListEither(value).map { bt =>
+                Ok(SearchTransactionsResponse(bt, res.total, res.nextOffset))
+              }.merge
+            }.merge
+        })
+      }
+    }
   }
 
   val allRoutes: HttpRoutes[F] = testRoutes <+> routes
