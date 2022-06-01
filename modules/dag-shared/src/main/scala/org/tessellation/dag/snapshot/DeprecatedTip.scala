@@ -1,11 +1,12 @@
 package org.tessellation.dag.snapshot
 
 import org.tessellation.dag.domain.block.BlockReference
+import org.tessellation.ext.derevo.ordering
 
-import derevo.cats.{eqv, show}
+import derevo.cats.{order, show}
 import derevo.derive
 
-@derive(eqv, show)
+@derive(order, ordering, show)
 case class DeprecatedTip(
   block: BlockReference,
   deprecatedAt: SnapshotOrdinal

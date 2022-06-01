@@ -3,7 +3,6 @@ package org.tessellation.infrastructure.snapshot
 import cats.data.NonEmptyList
 import cats.effect.{IO, Resource}
 import cats.syntax.option._
-
 import org.tessellation.dag.dagSharedKryoRegistrar
 import org.tessellation.dag.snapshot.GlobalSnapshot
 import org.tessellation.ext.cats.syntax.next._
@@ -17,12 +16,13 @@ import org.tessellation.sdk.sdkKryoRegistrar
 import org.tessellation.security.SecurityProvider
 import org.tessellation.security.hex.Hex
 import org.tessellation.security.signature.Signed
-
 import better.files._
 import eu.timepit.refined.auto._
 import fs2.io.file.Path
 import weaver.MutableIOSuite
 import weaver.scalacheck.Checkers
+
+import scala.collection.immutable.{SortedMap, SortedSet}
 
 object GlobalSnapshotStorageSuite extends MutableIOSuite with Checkers {
 
@@ -50,9 +50,9 @@ object GlobalSnapshotStorageSuite extends MutableIOSuite with Checkers {
             Height.MinValue,
             SubHeight.MinValue,
             genesis.value.hash.toOption.get,
-            Set.empty,
-            Map.empty,
-            Set.empty,
+            SortedSet.empty,
+            SortedMap.empty,
+            SortedSet.empty,
             NonEmptyList.of(PeerId(Hex("peer1"))),
             genesis.info,
             genesis.tips

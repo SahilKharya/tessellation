@@ -5,6 +5,7 @@ import cats.syntax.functor._
 import cats.syntax.semigroup._
 
 import org.tessellation.ext.crypto._
+import org.tessellation.ext.derevo.ordering
 import org.tessellation.kryo.KryoSerializer
 import org.tessellation.schema.address.Address
 import org.tessellation.schema.balance.Amount
@@ -124,7 +125,7 @@ object transaction {
     val _ParentOrdinal: Lens[Transaction, TransactionOrdinal] = _Parent.andThen(TransactionReference._Ordinal)
   }
 
-  @derive(decoder, encoder, order, show)
+  @derive(decoder, encoder, order, ordering, show)
   case class RewardTransaction(
     destination: Address,
     amount: TransactionAmount

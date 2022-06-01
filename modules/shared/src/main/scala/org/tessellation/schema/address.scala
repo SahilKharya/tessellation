@@ -2,6 +2,7 @@ package org.tessellation.schema
 
 import cats.{Eq, Order, Show}
 
+import org.tessellation.ext.derevo.ordering
 import org.tessellation.ext.refined._
 import org.tessellation.schema.balance.Balance
 import org.tessellation.security.Base58
@@ -18,7 +19,7 @@ import io.getquill.MappedEncoding
 
 object address {
 
-  @derive(decoder, encoder, keyDecoder, keyEncoder, eqv, show, order)
+  @derive(decoder, encoder, keyDecoder, keyEncoder, eqv, show, order, ordering)
   @newtype
   case class Address(value: DAGAddress)
 
@@ -56,6 +57,9 @@ object address {
 
     implicit val orderDAGAddress: Order[DAGAddress] =
       orderOf[String, DAGAddressRefined]
+
+    implicit val orderingDAGAddress: Ordering[DAGAddress] =
+      orderOf[String, DAGAddressRefined].toOrdering
   }
 
   case class AddressCache(balance: Balance)

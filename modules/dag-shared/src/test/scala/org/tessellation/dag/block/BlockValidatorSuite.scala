@@ -1,7 +1,6 @@
 package org.tessellation.dag.block
 
 import java.security.KeyPair
-
 import cats.data.NonEmptyList
 import cats.effect.{Async, IO, Resource}
 import cats.syntax.applicative._
@@ -9,7 +8,6 @@ import cats.syntax.flatMap._
 import cats.syntax.functor._
 import cats.syntax.order._
 import cats.syntax.validated._
-
 import org.tessellation.dag.block.BlockValidator.BlockValidationError
 import org.tessellation.dag.dagSharedKryoRegistrar
 import org.tessellation.dag.domain.block.{BlockReference, DAGBlock}
@@ -21,12 +19,13 @@ import org.tessellation.kryo.KryoSerializer
 import org.tessellation.security.SecurityProvider
 import org.tessellation.security.signature.SignedValidator
 import org.tessellation.shared.sharedKryoRegistrar
-
 import eu.timepit.refined.auto._
 import eu.timepit.refined.types.numeric.PosInt
 import org.scalacheck.Arbitrary.arbitrary
 import weaver.MutableIOSuite
 import weaver.scalacheck.Checkers
+
+import scala.collection.immutable.SortedSet
 
 object BlockValidatorSuite extends MutableIOSuite with Checkers {
   type Res = (KryoSerializer[IO], SecurityProvider[IO])
@@ -55,7 +54,7 @@ object BlockValidatorSuite extends MutableIOSuite with Checkers {
     val validBlockGen = for {
       p1 <- arbitrary[BlockReference]
       p2 <- arbitrary[BlockReference].suchThat(br => br =!= p1)
-    } yield DAGBlock(parent = NonEmptyList.of(p1, p2), transactions = Set.empty)
+    } yield DAGBlock(parent = NonEmptyList.of(p1, p2), transactions = SortedSet.empty)
 
     val validator = makeValidator[IO]
 
